@@ -79,7 +79,14 @@ class CPUCodeGen(TargetCodeGenerator):
 
         # Register dispatchers
         dispatcher.register_node_dispatcher(self)
-        dispatcher.register_map_dispatcher([dtypes.ScheduleType.CPU_Multicore, dtypes.ScheduleType.Sequential], self)
+        dispatcher.register_map_dispatcher(
+            [
+                dtypes.ScheduleType.CPU_Multicore,
+                dtypes.ScheduleType.CPU_Multicore_Singleton,
+                dtypes.ScheduleType.Sequential,
+            ],
+            self
+        )
 
         cpu_storage = [dtypes.StorageType.CPU_Heap, dtypes.StorageType.CPU_ThreadLocal, dtypes.StorageType.Register]
         dispatcher.register_array_dispatcher(cpu_storage, self)
@@ -87,6 +94,8 @@ class CPUCodeGen(TargetCodeGenerator):
         # Register CPU copies (all internal pairs)
         for src_storage, dst_storage in itertools.product(cpu_storage, cpu_storage):
             dispatcher.register_copy_dispatcher(src_storage, dst_storage, None, self)
+
+        self.has_generated_omp_header = False
 
     @staticmethod
     def cmake_options():
@@ -1684,7 +1693,6 @@ class CPUCodeGen(TargetCodeGenerator):
         map_name = "__DACEMAP_" + str(state_id) + "_" + str(dfg.node_id(node))
 
         result = callsite_stream
-        map_header = ""
 
         # Encapsulate map with a C scope
         # TODO: Refactor out of MapEntry generation (generate_scope_header?)
@@ -1708,6 +1716,7 @@ class CPUCodeGen(TargetCodeGenerator):
         # TODO: Refactor to generate_scope_preamble once a general code
         #  generator (that CPU inherits from) is implemented
         if node.map.schedule == dtypes.ScheduleType.CPU_Multicore:
+            map_header = ""
             map_header += "#pragma omp parallel for"
             if node.map.omp_schedule != dtypes.OMPScheduleType.Default:
                 schedule = " schedule("
@@ -1742,6 +1751,7 @@ class CPUCodeGen(TargetCodeGenerator):
             #            reduced_variables.append(outedge)
 
             map_header += " %s\n" % ", ".join(reduction_stmts)
+            result.write(map_header, sdfg, state_id, node)
 
         # TODO: Explicit map unroller
         if node.map.unroll:
@@ -1750,23 +1760,36 @@ class CPUCodeGen(TargetCodeGenerator):
 
         constsize = all([not symbolic.issymbolic(v, sdfg.constants) for r in node.map.range for v in r])
 
-        # Nested loops
-        result.write(map_header, sdfg, state_id, node)
-        for i, r in enumerate(node.map.range):
-            # var = '__DACEMAP_%s_%d' % (node.map.label, i)
-            var = map_params[i]
-            begin, end, skip = r
+        if node.map.schedule == dtypes.ScheduleType.CPU_Multicore_Singleton:
+            if 1 != len(node.map.range):
+                raise ValueError(f'A CPU Thread Singleton map can only have one range ("{node.map.range}")')
 
-            if node.map.unroll:
-                result.write("#pragma unroll", sdfg, state_id, node)
+            if not self.has_generated_omp_header:
+                function_stream.write("#include <omp.h>", sdfg, state_id, node)
+                self.has_generated_omp_header = True
 
-            result.write(
-                "for (auto %s = %s; %s < %s; %s += %s) {\n" %
-                (var, cpp.sym2cpp(begin), var, cpp.sym2cpp(end + 1), var, cpp.sym2cpp(skip)),
-                sdfg,
-                state_id,
-                node,
-            )
+            # TODO: We should warn the user that we ignore begin, end and skip of the range
+            result.write("#pragma omp parallel", sdfg, state_id, node)
+            result.write("{", sdfg, state_id, node)
+            result.write(f"int {map_params[0]} = omp_get_thread_num();", sdfg, state_id, node)
+
+        else:
+            # Nested loops
+            for i, r in enumerate(node.map.range):
+                # var = '__DACEMAP_%s_%d' % (node.map.label, i)
+                var = map_params[i]
+                begin, end, skip = r
+
+                if node.map.unroll:
+                    result.write("#pragma unroll", sdfg, state_id, node)
+
+                result.write(
+                    "for (auto %s = %s; %s < %s; %s += %s) {\n" %
+                    (var, cpp.sym2cpp(begin), var, cpp.sym2cpp(end + 1), var, cpp.sym2cpp(skip)),
+                    sdfg,
+                    state_id,
+                    node,
+                )
 
         callsite_stream.write(inner_stream.getvalue())
 
