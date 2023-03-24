@@ -9,7 +9,10 @@ N = dace.symbol("N")
 @dace.program
 def cpu_singleton_program(A: dace.int32[N]):
     for i in dace.map[0:N]:
-        A[i] = i
+        with dace.tasklet:
+            # Assuming OpenMP is used
+            t = omp_get_thread_num()
+            t >> A[i]
 
 
 @dace.program
