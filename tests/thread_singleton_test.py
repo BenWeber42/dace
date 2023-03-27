@@ -8,7 +8,7 @@ N = dace.symbol("N")
 
 @dace.program
 def cpu_singleton_program(A: dace.int32[N]):
-    for i in dace.map[0:N]:
+    for i in dace.map[0:N] @ dtypes.ScheduleType.CPU_Multicore_Singleton:
         with dace.tasklet:
             # Assuming OpenMP is used
             t = omp_get_thread_num()
@@ -18,18 +18,8 @@ def cpu_singleton_program(A: dace.int32[N]):
 @dace.program
 def cpu_singleton_program_invalid_map_ranges(A: dace.int32[N]):
     # We can only have one range with the `CPU_Multicore_Singleton` schedule!
-    for i, j in dace.map[0:N, 0:N]:
+    for i, j in dace.map[0:N, 0:N] @ dtypes.ScheduleType.CPU_Multicore_Singleton:
         A[i] = i
-
-
-def first_map_entry_to_cpu_singleton(sdfg: dace.SDFG) -> None:
-    map_entry = None
-    for node, _ in sdfg.all_nodes_recursive():
-        if isinstance(node, nodes.MapEntry):
-            map_entry = node
-            break
-
-    map_entry.schedule = dtypes.ScheduleType.CPU_Multicore_Singleton
 
 
 def test_cpu_singleton() -> None:
@@ -39,7 +29,6 @@ def test_cpu_singleton() -> None:
     A[:] = -1
 
     sdfg = cpu_singleton_program.to_sdfg()
-    first_map_entry_to_cpu_singleton(sdfg)
 
     sdfg(A, N=N)
     threads = np.max(A) + 1
@@ -56,7 +45,6 @@ def test_cpu_singleton_invalid_map_ranges() -> None:
     A[:] = -1
 
     sdfg = cpu_singleton_program_invalid_map_ranges.to_sdfg()
-    first_map_entry_to_cpu_singleton(sdfg)
 
     try:
         sdfg(A, N=N)
