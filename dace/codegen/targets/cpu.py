@@ -1755,7 +1755,7 @@ class CPUCodeGen(TargetCodeGenerator):
 
         # TODO: Explicit map unroller
         if node.map.unroll:
-            if node.map.schedule == dtypes.ScheduleType.CPU_Multicore:
+            if node.map.schedule in [dtypes.ScheduleType.CPU_Multicore, dtypes.ScheduleType.CPU_Multicore_Singleton]:
                 raise ValueError("A Multicore CPU map cannot be unrolled (" + node.map.label + ")")
 
         constsize = all([not symbolic.issymbolic(v, sdfg.constants) for r in node.map.range for v in r])
